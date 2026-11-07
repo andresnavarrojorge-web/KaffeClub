@@ -132,6 +132,37 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  // Si el popup de Google se cierra o se vuelve atrás sin completar el login,
+  // la promesa de signInWithPopup puede quedar colgada en móvil. Al volver a la
+  // app restauramos el botón automáticamente (sin refrescar la página).
+  useEffect(() => {
+    if (!signingIn) return;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const release = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!auth.currentUser) setSigningIn(false);
+      }, 1500);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') release();
+    };
+
+    window.addEventListener('focus', release);
+    document.addEventListener('visibilitychange', onVisible);
+    const hardStop = setTimeout(() => {
+      if (!auth.currentUser) setSigningIn(false);
+    }, 60000);
+
+    return () => {
+      window.removeEventListener('focus', release);
+      document.removeEventListener('visibilitychange', onVisible);
+      if (timer) clearTimeout(timer);
+      clearTimeout(hardStop);
+    };
+  }, [signingIn]);
+
   // Verify whether the signed-in user is the Owner or an Authorized Employee (Checking both staff_invites and empleados)
   useEffect(() => {
     if (!authReady) return;
@@ -390,11 +421,18 @@ export default function App() {
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err) {
-      setAuthError(
-        err instanceof Error
-          ? err.message
-          : 'No se pudo iniciar sesión con Google.'
-      );
+      const code = (err as { code?: string })?.code;
+      // Cerrar o cancelar el popup no es un error: solo se restaura el botón.
+      if (
+        code !== 'auth/popup-closed-by-user' &&
+        code !== 'auth/cancelled-popup-request'
+      ) {
+        setAuthError(
+          err instanceof Error
+            ? err.message
+            : 'No se pudo iniciar sesión con Google.'
+        );
+      }
     } finally {
       setSigningIn(false);
     }
@@ -1297,8 +1335,10 @@ export default function App() {
                 type="text"
                 maxLength={40}
                 value={baristaName}
-                onChange={(e) => setBaristaName(e.target.value)}
-                className="text-xs font-medium text-zinc-900 w-28 focus:outline-none"
+                readOnly
+                tabIndex={-1}
+                aria-readonly="true"
+                className="text-xs font-medium text-zinc-900 w-28 bg-transparent cursor-default select-none focus:outline-none"
               />
             </div>
 
@@ -2172,7 +2212,7 @@ export default function App() {
         editingMember={editingMember}
         existingCodes={existingCodes}
         onClose={() => {
-          setIsRegisterModalOpen,
+          setIsRegisterModalOpen(false);
           setEditingMember(null);
         }}
         onSaveMember={handleSaveMember}
