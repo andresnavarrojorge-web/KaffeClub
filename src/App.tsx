@@ -155,7 +155,7 @@ export default function App() {
 
     let cancelled = false;
     setAccessStatus('checking');
-    const inviteId = emailToInviteId(userEmail);
+    const inviteId = userEmail;
 
     const verifyEmployeeAccess = async () => {
       try {
@@ -2163,7 +2163,7 @@ export default function App() {
           KaffeClub · Enlace para empleados: {SHARED_APP_URL}
         </span>
         <span className="font-mono tabular-nums">
-          Acceso exclusivo por correo autorizado · 1 reclamo / día
+          Acceso exclusivo por correo autorizado · 1 reclamo / dia
         </span>
       </footer>
 
@@ -2172,7 +2172,7 @@ export default function App() {
         editingMember={editingMember}
         existingCodes={existingCodes}
         onClose={() => {
-          setIsRegisterModalOpen(false);
+          setIsRegisterModalOpen,
           setEditingMember(null);
         }}
         onSaveMember={handleSaveMember}
