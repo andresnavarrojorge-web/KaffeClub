@@ -3,7 +3,7 @@
   "appId": "1:923411761051:web:dcfd113d7ff4db6a90033e",
   "apiKey": "AIzaSyCvr5MGYkrfryHgG8i6DvCtzYQ2Lw3K2D4",
   "authDomain": "kaffeclub.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-164b4176-b77a-4cd9-b6d4-82f0fd489ea3",
+  "firestoreDatabaseId": "(default)",
   "storageBucket": "kaffeclub.firebasestorage.app",
   "messagingSenderId": "923411761051",
   "measurementId": "G-DBXYZ13R4V",
