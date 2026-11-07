@@ -1,12 +1,12 @@
 {
   "projectId": "kaffeclub",
-  "appId": "1:991031144640:web:207e0614e4b89b440abd25",
-  "apiKey": "AIzaSyBFA5AFX8-X-laBxyziifvP5MHbT00Kr2A",
+  "appId": "1:923411761051:web:dcfd113d7ff4db6a90033e",
+  "apiKey": "AIzaSyCvr5MGYkrfryHgG8i6DvCtzYQ2Lw3K2D4",
   "authDomain": "kaffeclub.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-164b4176-b77a-4cd9-b6d4-82f0fd489ea3",
   "storageBucket": "kaffeclub.firebasestorage.app",
-  "messagingSenderId": "991031144640",
-  "measurementId": "",
+  "messagingSenderId": "923411761051",
+  "measurementId": "G-DBXYZ13R4V",
   "oAuthClientId": "991031144640-c5qjebr8skpccg1ma6l9p5vbtvamlefp.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }
