@@ -412,7 +412,7 @@ export default function App() {
   }) => {
     if (!user) return;
     const cleanEmail = data.email.toLowerCase().trim();
-    const inviteId = emailToInviteId(cleanEmail);
+    const inviteId = cleanEmail;
     const activeEmails = staffInvites
       .filter((inv) => inv.status === 'active' && inv.id !== inviteId)
       .map((inv) => inv.email.toLowerCase());
