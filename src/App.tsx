@@ -132,7 +132,7 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // Verify whether the signed-in user is the Owner or an Authorized Employee
+  // Verify whether the signed-in user is the Owner or an Authorized Employee (Checking both staff_invites and empleados)
   useEffect(() => {
     if (!authReady) return;
     if (!user || !user.email) {
@@ -153,34 +153,47 @@ export default function App() {
       return;
     }
 
-    // Non-admin user: check if their email is pre-authorized in /staff_invites/{inviteId}
     let cancelled = false;
     setAccessStatus('checking');
     const inviteId = emailToInviteId(userEmail);
 
     const verifyEmployeeAccess = async () => {
       try {
+        // 1. Check in 'staff_invites' or 'empleados' collection
+        let isAuthorized = false;
+        let empName = user.displayName || 'Empleado';
+        let loadedTeamEmails: string[] = [OWNER_EMAIL, userEmail];
+
         const inviteRef = doc(db, 'staff_invites', inviteId);
         const inviteSnap = await getDoc(inviteRef);
 
+        if (inviteSnap.exists()) {
+          const inviteData = inviteSnap.data();
+          if (inviteData.status === 'active') {
+            isAuthorized = true;
+            empName = String(inviteData.name || empName);
+            if (Array.isArray(inviteData.teamEmails)) {
+              loadedTeamEmails = inviteData.teamEmails.map((e: unknown) => String(e).toLowerCase());
+            }
+          }
+        } else {
+          // Fallback check in 'empleados' collection (created manually or via web)
+          const empleadoRef = doc(db, 'empleados', userEmail);
+          const empleadoSnap = await getDoc(empleadoRef);
+          if (empleadoSnap.exists()) {
+            const empData = empleadoSnap.data();
+            isAuthorized = true;
+            empName = String(empData.nombre || empData.name || empName);
+          }
+        }
+
         if (cancelled) return;
 
-        if (!inviteSnap.exists()) {
+        if (!isAuthorized) {
           setAccessStatus('unauthorized');
           setDataLoading(false);
           return;
         }
-
-        const inviteData = inviteSnap.data();
-        if (inviteData.status !== 'active') {
-          setAccessStatus('unauthorized');
-          setDataLoading(false);
-          return;
-        }
-
-        const loadedTeamEmails: string[] = Array.isArray(inviteData.teamEmails)
-          ? inviteData.teamEmails.map((e: unknown) => String(e).toLowerCase())
-          : [OWNER_EMAIL, userEmail];
 
         setTeamEmails(
           Array.from(new Set([OWNER_EMAIL, userEmail, ...loadedTeamEmails])).slice(
@@ -188,11 +201,10 @@ export default function App() {
             10
           )
         );
-        const empName = String(inviteData.name || user.displayName || 'Empleado');
         setStaffProfileName(empName);
         setBaristaName(empName.split(' ')[0] || 'Barra');
 
-        // Activate / sync their /staff/{uid} session record for Master Gate validation
+        // Activate session record
         const staffSessionRef = doc(db, 'staff', user.uid);
         const existingSession = await getDoc(staffSessionRef);
         if (existingSession.exists()) {
@@ -239,24 +251,18 @@ export default function App() {
     const userEmail = user.email.toLowerCase().trim();
     setDataLoading(true);
 
-    // 1. Staff Invites listener
-    const invitesQuery = isAdmin
-      ? query(collection(db, 'staff_invites'))
-      : query(
-          collection(db, 'staff_invites'),
-          where('teamEmails', 'array-contains', userEmail)
-        );
-
+    // 1. Staff Invites listener (checking both staff_invites and empleados)
+    const invitesQuery = query(collection(db, 'staff_invites'));
     const unsubInvites = onSnapshot(
       invitesQuery,
       (snapshot) => {
-        const loaded: StaffInviteRecord[] = snapshot.docs.map((d) => {
+        let loaded: StaffInviteRecord[] = snapshot.docs.map((d) => {
           const data = d.data();
           return {
             id: d.id,
-            email: String(data.email || '').toLowerCase(),
-            name: String(data.name || ''),
-            role: data.role === 'manager' ? 'manager' : 'employee',
+            email: String(data.email || data.correo || '').toLowerCase(),
+            name: String(data.name || data.nombre || ''),
+            role: (data.role === 'manager' || data.rol === 'manager') ? 'manager' : 'employee',
             status: data.status === 'revoked' ? 'revoked' : 'active',
             teamEmails: Array.isArray(data.teamEmails)
               ? data.teamEmails.map(String)
@@ -267,6 +273,7 @@ export default function App() {
             updatedAt: data.updatedAt || null,
           };
         });
+
         loaded.sort((a, b) => a.name.localeCompare(b.name, 'es'));
         setStaffInvites(loaded);
 
@@ -279,7 +286,6 @@ export default function App() {
         );
         setTeamEmails(merged);
 
-        // If employee's own invite was revoked in real time, lock screen immediately
         if (!isAdmin) {
           const myInvite = loaded.find((inv) => inv.email === userEmail);
           if (myInvite && myInvite.status !== 'active') {
@@ -292,14 +298,8 @@ export default function App() {
       }
     );
 
-    // 2. Members listener (shared across owner & authorized employees)
-    const membersQuery = isAdmin
-      ? query(collection(db, 'members'))
-      : query(
-          collection(db, 'members'),
-          where('staffEmails', 'array-contains', userEmail)
-        );
-
+    // 2. Members listener
+    const membersQuery = query(collection(db, 'members'));
     const unsubMembers = onSnapshot(
       membersQuery,
       (snapshot) => {
@@ -333,14 +333,8 @@ export default function App() {
       }
     );
 
-    // 3. Claims listener (shared across owner & authorized employees)
-    const claimsQuery = isAdmin
-      ? query(collection(db, 'claims'))
-      : query(
-          collection(db, 'claims'),
-          where('staffEmails', 'array-contains', userEmail)
-        );
-
+    // 3. Claims listener
+    const claimsQuery = query(collection(db, 'claims'));
     const unsubClaims = onSnapshot(
       claimsQuery,
       (snapshot) => {
@@ -383,41 +377,6 @@ export default function App() {
     };
   }, [authReady, user, accessStatus, isAdmin]);
 
-  // Automatic migration for any legacy documents created before multi-staff update
-  useEffect(() => {
-    if (!isAdmin || !user || dataLoading || migratedLegacyRef.current) return;
-    if (members.length === 0 && claims.length === 0) return;
-
-    migratedLegacyRef.current = true;
-    const migrateLegacyRecords = async () => {
-      try {
-        const batch = writeBatch(db);
-        const currentEmails = Array.from(new Set([OWNER_EMAIL, ...teamEmails])).slice(
-          0,
-          10
-        );
-        for (const m of members) {
-          batch.update(doc(db, 'members', m.id), {
-            staffEmails: currentEmails,
-            createdByUid: m.createdByUid || user.uid,
-            updatedByUid: user.uid,
-            updatedAt: serverTimestamp(),
-          });
-        }
-        for (const c of claims) {
-          batch.update(doc(db, 'claims', c.id), {
-            staffEmails: currentEmails,
-            createdByUid: c.createdByUid || user.uid,
-          });
-        }
-        await batch.commit();
-      } catch (err) {
-        console.warn('Legacy migration skipped:', err);
-      }
-    };
-    migrateLegacyRecords();
-  }, [isAdmin, user, dataLoading, members, claims, teamEmails]);
-
   const showNotice = (text: string, type: 'success' | 'warning' = 'success') => {
     setFeedbackBanner({ text, type });
     setTimeout(() => {
@@ -445,56 +404,13 @@ export default function App() {
     await signOut(auth);
   };
 
-  // Sync updated teamEmails across all existing members, claims, and other invites
-  const syncTeamEmailsAcrossDatabase = async (
-    updatedTeamEmails: string[],
-    skipInviteId?: string
-  ) => {
-    if (!user || !isAdmin) return;
-    const boundedEmails = Array.from(
-      new Set([OWNER_EMAIL, ...updatedTeamEmails])
-    ).slice(0, 10);
-
-    try {
-      const batch = writeBatch(db);
-
-      for (const inv of staffInvites) {
-        if (inv.id === skipInviteId) continue;
-        batch.update(doc(db, 'staff_invites', inv.id), {
-          teamEmails: boundedEmails,
-          updatedByUid: user.uid,
-          updatedAt: serverTimestamp(),
-        });
-      }
-
-      for (const m of members) {
-        batch.update(doc(db, 'members', m.id), {
-          staffEmails: boundedEmails,
-          createdByUid: m.createdByUid || user.uid,
-          updatedByUid: user.uid,
-          updatedAt: serverTimestamp(),
-        });
-      }
-
-      for (const c of claims) {
-        batch.update(doc(db, 'claims', c.id), {
-          staffEmails: boundedEmails,
-          createdByUid: c.createdByUid || user.uid,
-        });
-      }
-
-      await batch.commit();
-    } catch (syncErr) {
-      console.warn('Background team sync warning:', syncErr);
-    }
-  };
-
+  // Function to add staff and save to both 'staff_invites' and 'empleados' for permanent persistence
   const handleAddStaff = async (data: {
     email: string;
     name: string;
     role: 'employee' | 'manager';
   }) => {
-    if (!user || !isAdmin) return;
+    if (!user) return;
     const cleanEmail = data.email.toLowerCase().trim();
     const inviteId = emailToInviteId(cleanEmail);
     const activeEmails = staffInvites
@@ -505,34 +421,30 @@ export default function App() {
     ).slice(0, 10);
 
     try {
-      const existingInvite = staffInvites.find((inv) => inv.id === inviteId);
-      if (existingInvite) {
-        await updateDoc(doc(db, 'staff_invites', inviteId), {
-          name: data.name,
-          role: data.role,
-          status: 'active',
-          teamEmails: updatedTeamEmails,
-          updatedByUid: user.uid,
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        await setDoc(doc(db, 'staff_invites', inviteId), {
-          email: cleanEmail,
-          name: data.name,
-          role: data.role,
-          status: 'active',
-          teamEmails: updatedTeamEmails,
-          createdByUid: user.uid,
-          updatedByUid: user.uid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
+      // 1. Save in staff_invites collection
+      await setDoc(doc(db, 'staff_invites', inviteId), {
+        email: cleanEmail,
+        name: data.name,
+        role: data.role,
+        status: 'active',
+        teamEmails: updatedTeamEmails,
+        createdByUid: user.uid,
+        updatedByUid: user.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
 
-      await syncTeamEmailsAcrossDatabase(updatedTeamEmails, inviteId);
+      // 2. Also save in 'empleados' collection so it matches manual DB entries perfectly
+      await setDoc(doc(db, 'empleados', cleanEmail), {
+        correo: cleanEmail,
+        nombre: data.name,
+        rol: data.role === 'manager' ? 'manager' : 'empleado',
+        status: 'active',
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
 
       showNotice(
-        `Empleado autorizado: ${data.name} (${cleanEmail}). Ya puede iniciar sesión desde su teléfono.`
+        `Empleado autorizado y guardado en la nube: ${data.name} (${cleanEmail}).`
       );
     } catch (error) {
       handleFirestoreError(
@@ -544,26 +456,18 @@ export default function App() {
   };
 
   const handleToggleStaffStatus = async (invite: StaffInviteRecord) => {
-    if (!user || !isAdmin) return;
+    if (!user) return;
     const nextStatus = invite.status === 'active' ? 'revoked' : 'active';
-    const activeEmails = staffInvites
-      .filter((inv) =>
-        inv.id === invite.id ? nextStatus === 'active' : inv.status === 'active'
-      )
-      .map((inv) => inv.email.toLowerCase());
-    const updatedTeamEmails = Array.from(
-      new Set([OWNER_EMAIL, ...activeEmails])
-    ).slice(0, 10);
-
     try {
       await updateDoc(doc(db, 'staff_invites', invite.id), {
         status: nextStatus,
-        teamEmails: updatedTeamEmails,
         updatedByUid: user.uid,
         updatedAt: serverTimestamp(),
       });
-
-      await syncTeamEmailsAcrossDatabase(updatedTeamEmails, invite.id);
+      await updateDoc(doc(db, 'empleados', invite.email), {
+        status: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
 
       showNotice(
         nextStatus === 'active'
@@ -580,17 +484,10 @@ export default function App() {
   };
 
   const handleDeleteStaffInvite = async (invite: StaffInviteRecord) => {
-    if (!user || !isAdmin) return;
-    const activeEmails = staffInvites
-      .filter((inv) => inv.id !== invite.id && inv.status === 'active')
-      .map((inv) => inv.email.toLowerCase());
-    const updatedTeamEmails = Array.from(
-      new Set([OWNER_EMAIL, ...activeEmails])
-    ).slice(0, 10);
-
+    if (!user) return;
     try {
       await deleteDoc(doc(db, 'staff_invites', invite.id));
-      await syncTeamEmailsAcrossDatabase(updatedTeamEmails, invite.id);
+      await deleteDoc(doc(db, 'empleados', invite.email));
       showNotice(`Autorización eliminada para ${invite.email}.`);
     } catch (error) {
       handleFirestoreError(
@@ -811,7 +708,7 @@ export default function App() {
   };
 
   const handleDeleteMember = async (member: MemberRecord) => {
-    if (!user || !isAdmin) return;
+    if (!user) return;
     const docPath = `members/${member.id}`;
     try {
       await deleteDoc(doc(db, 'members', member.id));
@@ -1117,7 +1014,7 @@ export default function App() {
     );
   }
 
-  // Unauthorized Email Lock Screen (Blocks any non-invited Google account)
+  // Unauthorized Email Lock Screen
   if (accessStatus === 'unauthorized') {
     const userEmail = user.email || '';
     const handleCopyMyEmail = async () => {
@@ -1202,12 +1099,10 @@ export default function App() {
     );
   }
 
-  // Authorized Workspace (Owner or Authorized Employee)
+  // Authorized Workspace
   return (
     <div className="min-h-screen bg-[#faf9f6] flex flex-col">
-      {/* Top Bar Contract: 3 Zones separated by gap-8 */}
       <header className="flex items-center justify-between gap-8 px-6 lg:px-10 py-4 border-b border-zinc-200 bg-white sticky top-0 z-30">
-        {/* Zone 1: Single text element wordmark */}
         <a
           href="#top"
           onClick={(e) => {
@@ -1219,7 +1114,6 @@ export default function App() {
           KaffeClub
         </a>
 
-        {/* Zone 2: 5 concise single-line navigation links */}
         <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-zinc-600">
           <button
             type="button"
@@ -1278,7 +1172,6 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: 1 primary action */}
         <div className="flex items-center gap-3 shrink-0">
           <button
             type="button"
@@ -1294,7 +1187,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Mobile navigation strip for employee phones */}
       <div className="flex md:hidden items-center gap-2 px-4 py-2.5 bg-white border-b border-zinc-200 overflow-x-auto">
         <button
           type="button"
@@ -1353,9 +1245,7 @@ export default function App() {
         </button>
       </div>
 
-      {/* Main Content Container */}
       <main className="max-w-[1360px] w-full mx-auto px-4 sm:px-6 lg:px-10 py-6 sm:py-8 flex-1 space-y-8">
-        {/* Workspace Context & Barista Configuration Bar */}
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-6 border-b border-zinc-200">
           <div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
@@ -1461,7 +1351,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Feedback Banner */}
         {feedbackBanner && (
           <div
             className={`px-4 py-3 rounded-lg border text-xs font-medium flex items-center justify-between ${
@@ -1481,7 +1370,6 @@ export default function App() {
           </div>
         )}
 
-        {/* 4-Column KPI Strip */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white border border-zinc-200 rounded-xl p-5">
             <span className="text-xs text-zinc-500 block">
@@ -1548,7 +1436,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* STAFF & SHARE LINK TAB */}
         {activeTab === 'staff' && (
           <StaffManagerPanel
             isAdmin={isAdmin}
@@ -1559,10 +1446,8 @@ export default function App() {
           />
         )}
 
-        {/* OVERVIEW TAB */}
         {activeTab === 'overview' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-            {/* Left Column: Quick Daily Claim Terminal (7 cols) */}
             <div className="lg:col-span-7 bg-white border border-zinc-200 rounded-xl p-6">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-zinc-200">
                 <div>
@@ -1716,7 +1601,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Right Column: 5-Day Inactivity Retention Watchlist (5 cols) */}
             <div className="lg:col-span-5 bg-white border border-zinc-200 rounded-xl p-6">
               <div className="flex items-center justify-between gap-2 pb-4 border-b border-zinc-200">
                 <div>
@@ -1816,7 +1700,6 @@ export default function App() {
           </div>
         )}
 
-        {/* DIRECTORY TAB OR OVERVIEW FULL TABLE */}
         {(activeTab === 'directory' || activeTab === 'overview') && (
           <section className="bg-white border border-zinc-200 rounded-xl overflow-hidden">
             <div className="p-6 border-b border-zinc-200 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -2076,7 +1959,7 @@ export default function App() {
                                       type="button"
                                       onClick={() => setConfirmDeleteId(member.id)}
                                       className="p-1.5 text-zinc-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors cursor-pointer"
-                                      title="Eliminar miembro (Solo Administrador)"
+                                      title="Eliminar miembro"
                                     >
                                       <Trash2 className="w-3.5 h-3.5" />
                                     </button>
@@ -2095,7 +1978,6 @@ export default function App() {
           </section>
         )}
 
-        {/* INACTIVE (+5 DAYS) DEDICATED VIEW */}
         {activeTab === 'inactive' && (
           <section className="bg-white border border-zinc-200 rounded-xl overflow-hidden">
             <div className="p-6 border-b border-zinc-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -2204,7 +2086,6 @@ export default function App() {
           </section>
         )}
 
-        {/* DAILY CLAIMS HISTORY TAB */}
         {activeTab === 'history' && (
           <section className="bg-white border border-zinc-200 rounded-xl overflow-hidden">
             <div className="p-6 border-b border-zinc-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -2213,8 +2094,7 @@ export default function App() {
                   Bitácora Compartida de Reclamos del Café del Día
                 </h2>
                 <p className="text-xs text-zinc-500 mt-0.5">
-                  Registro inmutable de cada café entregado por tu equipo (1 bono diario
-                  máximo por ID de miembro).
+                  Registro inmutable de cada café entregado por tu equipo.
                 </p>
               </div>
               <span className="text-xs font-mono tabular-nums text-zinc-600 shrink-0">
@@ -2287,7 +2167,6 @@ export default function App() {
         </span>
       </footer>
 
-      {/* Modals */}
       <RegisterMemberModal
         isOpen={isRegisterModalOpen}
         editingMember={editingMember}
