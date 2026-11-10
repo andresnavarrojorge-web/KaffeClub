@@ -31,6 +31,14 @@ export interface MemberRecord {
   updatedByUid: string;
   createdAt: Timestamp | null;
   updatedAt: Timestamp | null;
+  /** Foto del miembro, comprimida (data URL JPEG). */
+  photoData?: string;
+  /** Vencimiento de la membresía, formato YYYY-MM-DD. */
+  membershipExpiryDate?: string;
+  /** Fecha en que se abrió el saludo de cumpleaños por WhatsApp. */
+  lastBirthdayMessageDate?: string;
+  /** Fecha en que se abrió el aviso de vencimiento por WhatsApp. */
+  lastExpiryNoticeDate?: string;
 }
 
 export interface CoffeeClaimRecord {
@@ -167,4 +175,105 @@ export function sanitizePhoneForWhatsApp(phone: string): string {
     return `57${digits}`;
   }
   return digits;
+}
+
+// ---------------------------------------------------------------------------
+// Membresía de 6 meses, avisos y mensajes de WhatsApp
+// ---------------------------------------------------------------------------
+
+export const MEMBERSHIP_MONTHS = 6;
+export const EXPIRY_WARNING_DAYS = 15;
+
+export function addMonthsToDateString(dateStr: string, months: number): string {
+  const base = parseLocalDate(dateStr);
+  if (!base) return dateStr;
+  const day = base.getDate();
+  const target = new Date(base.getFullYear(), base.getMonth() + months, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(day, lastDay));
+  return getTodayDateString(target);
+}
+
+/** Vencimiento guardado; si el miembro es anterior a esta función, se calcula desde su registro. */
+export function getMembershipExpiryDate(member: MemberRecord): string {
+  if (member.membershipExpiryDate && DATE_REGEX.test(member.membershipExpiryDate)) {
+    return member.membershipExpiryDate;
+  }
+  if (member.createdAt && typeof member.createdAt.toDate === 'function') {
+    return addMonthsToDateString(
+      getTodayDateString(member.createdAt.toDate()),
+      MEMBERSHIP_MONTHS
+    );
+  }
+  return '';
+}
+
+export type MembershipState = 'active' | 'expiring' | 'expired' | 'unknown';
+
+export interface MembershipStatus {
+  state: MembershipState;
+  expiryDate: string;
+  /** Días que faltan (negativo si ya venció). */
+  daysLeft: number;
+}
+
+export function getMembershipStatus(member: MemberRecord, todayStr: string): MembershipStatus {
+  const expiryDate = getMembershipExpiryDate(member);
+  const today = parseLocalDate(todayStr);
+  const expiry = parseLocalDate(expiryDate);
+  if (!today || !expiry) return { state: 'unknown', expiryDate, daysLeft: 0 };
+  const daysLeft = Math.round((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  let state: MembershipState = 'active';
+  if (daysLeft < 0) state = 'expired';
+  else if (daysLeft <= EXPIRY_WARNING_DAYS) state = 'expiring';
+  return { state, expiryDate, daysLeft };
+}
+
+/** Al renovar se suman 6 meses al vencimiento actual (o a hoy si ya venció). */
+export function getRenewedExpiryDate(member: MemberRecord, todayStr: string): string {
+  const current = getMembershipExpiryDate(member);
+  const base = current && current >= todayStr ? current : todayStr;
+  return addMonthsToDateString(base, MEMBERSHIP_MONTHS);
+}
+
+function firstNameOf(name: string): string {
+  return name.trim().split(' ')[0] || name;
+}
+
+export function buildWhatsAppLink(phone: string, text: string): string {
+  return `https://wa.me/${sanitizePhoneForWhatsApp(phone)}?text=${encodeURIComponent(text)}`;
+}
+
+export function buildBirthdayMessage(member: MemberRecord): string {
+  return `¡Feliz cumpleaños, ${firstNameOf(member.name)}! 🎂 Todo el equipo de KaffeClub te desea un día increíble. Pasa hoy por la barra y celebra con nosotros: tu café del día te espera ☕`;
+}
+
+export function buildExpiryMessage(member: MemberRecord, status: MembershipStatus): string {
+  const first = firstNameOf(member.name);
+  if (status.state === 'expired') {
+    return `¡Hola ${first}! Te escribimos de KaffeClub. Tu membresía (ID ${member.memberCode}) venció el ${status.expiryDate}. Si quieres seguir disfrutando tu café diario, pasa por la barra y la renovamos por ${MEMBERSHIP_MONTHS} meses más. ¡Te esperamos!`;
+  }
+  const when =
+    status.daysLeft === 0
+      ? 'vence hoy'
+      : `vence el ${status.expiryDate} (en ${status.daysLeft} ${status.daysLeft === 1 ? 'día' : 'días'})`;
+  return `¡Hola ${first}! Te escribimos de KaffeClub. Tu membresía (ID ${member.memberCode}) ${when}. Pasa por la barra cuando quieras y la renovamos por ${MEMBERSHIP_MONTHS} meses más para que no pierdas tu café diario.`;
+}
+
+export function buildCredentialMessage(member: MemberRecord, expiryDate: string): string {
+  const until = expiryDate ? ` Tu membresía está vigente hasta el ${expiryDate}.` : '';
+  return `¡Hola ${firstNameOf(member.name)}! Esta es tu credencial de KaffeClub. Tu ID de socio es ${member.memberCode}.${until} Preséntala en la barra para reclamar tu café del día (1 por día).`;
+}
+
+export function buildAdminExpirySummary(
+  rows: { name: string; memberCode: string; expiryDate: string; daysLeft: number }[]
+): string {
+  const lines = rows.map((r) => {
+    const when =
+      r.daysLeft < 0
+        ? `venció el ${r.expiryDate} (hace ${Math.abs(r.daysLeft)} d)`
+        : `vence el ${r.expiryDate} (en ${r.daysLeft} d)`;
+    return `• ${r.name} (${r.memberCode}) ${when}`;
+  });
+  return `KaffeClub · Membresías por atender (${rows.length}):\n${lines.join('\n')}`;
 }

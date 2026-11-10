@@ -7,6 +7,7 @@ import {
   PHONE_REGEX,
   generateUniqueMemberCode,
 } from '../utils/membership';
+import { PhotoCapture } from './PhotoCapture';
 
 interface RegisterMemberModalProps {
   isOpen: boolean;
@@ -18,6 +19,7 @@ interface RegisterMemberModalProps {
     name: string;
     birthDate: string;
     phone: string;
+    photoData: string;
   }) => Promise<void>;
 }
 
@@ -32,6 +34,7 @@ export const RegisterMemberModal: React.FC<RegisterMemberModalProps> = ({
   const [birthDate, setBirthDate] = useState('');
   const [phone, setPhone] = useState('');
   const [memberCode, setMemberCode] = useState('');
+  const [photoData, setPhotoData] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -43,11 +46,13 @@ export const RegisterMemberModal: React.FC<RegisterMemberModalProps> = ({
         setBirthDate(editingMember.birthDate);
         setPhone(editingMember.phone);
         setMemberCode(editingMember.memberCode);
+        setPhotoData(editingMember.photoData || '');
       } else {
         setName('');
         setBirthDate('1996-05-15');
         setPhone('+57 300 ');
         setMemberCode(generateUniqueMemberCode(existingCodes));
+        setPhotoData('');
       }
     }
   }, [isOpen, editingMember, existingCodes]);
@@ -106,6 +111,7 @@ export const RegisterMemberModal: React.FC<RegisterMemberModalProps> = ({
         name: trimmedName,
         birthDate: trimmedBirth,
         phone: trimmedPhone,
+        photoData,
       });
       onClose();
     } catch (err) {
@@ -123,7 +129,7 @@ export const RegisterMemberModal: React.FC<RegisterMemberModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="bg-white border border-zinc-200 rounded-xl max-w-md w-full p-6 shadow-sm"
+        className="bg-white border border-zinc-200 rounded-xl max-w-md w-full max-h-[92vh] overflow-y-auto p-6 shadow-sm"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between pb-4 border-b border-zinc-200">
@@ -164,6 +170,17 @@ export const RegisterMemberModal: React.FC<RegisterMemberModalProps> = ({
                 <span>Nuevo ID</span>
               </button>
             )}
+          </div>
+
+          <div>
+            <span className="block text-xs font-medium text-zinc-700 mb-1.5">
+              Foto del miembro (opcional)
+            </span>
+            <PhotoCapture
+              photo={photoData}
+              onPhoto={(dataUrl) => setPhotoData(dataUrl)}
+              hint="Toma la foto aquí mismo o adjunta una desde la galería."
+            />
           </div>
 
           <div>

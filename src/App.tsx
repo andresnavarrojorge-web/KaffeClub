@@ -59,13 +59,18 @@ import {
   hasClaimedToday,
   isBirthdayTodayOrMonth,
   isInactiveForFiveDays,
+  MEMBERSHIP_MONTHS,
+  addMonthsToDateString,
+  getMembershipStatus,
+  getRenewedExpiryDate,
 } from './utils/membership';
 import { RegisterMemberModal } from './components/RegisterMemberModal';
 import { MemberCardModal } from './components/MemberCardModal';
 import { ReminderModal } from './components/ReminderModal';
 import { StaffManagerPanel } from './components/StaffManagerPanel';
+import { NoticesPanel } from './components/NoticesPanel';
 
-type NavTab = 'overview' | 'directory' | 'inactive' | 'history' | 'staff';
+type NavTab = 'overview' | 'directory' | 'inactive' | 'notices' | 'history' | 'staff';
 type DirectoryFilter =
   | 'all'
   | 'available_today'
@@ -345,6 +350,10 @@ export default function App() {
             totalClaims: Number(data.totalClaims || 0),
             lastClaimDate: String(data.lastClaimDate || ''),
             lastReminderSentDate: String(data.lastReminderSentDate || ''),
+            photoData: String(data.photoData || ''),
+            membershipExpiryDate: String(data.membershipExpiryDate || ''),
+            lastBirthdayMessageDate: String(data.lastBirthdayMessageDate || ''),
+            lastExpiryNoticeDate: String(data.lastExpiryNoticeDate || ''),
             status: data.status === 'archived' ? 'archived' : 'active',
             staffEmails: Array.isArray(data.staffEmails)
               ? data.staffEmails.map(String)
@@ -559,6 +568,23 @@ export default function App() {
       );
   }, [activeMembers, todayStr]);
 
+  const expiredMembersCount = useMemo(
+    () =>
+      activeMembers.filter((m) => getMembershipStatus(m, todayStr).state === 'expired').length,
+    [activeMembers, todayStr]
+  );
+
+  const noticesCount = useMemo(() => {
+    const expiryAlerts = activeMembers.filter((m) => {
+      const state = getMembershipStatus(m, todayStr).state;
+      return state === 'expired' || state === 'expiring';
+    }).length;
+    const birthdaysToday = activeMembers.filter(
+      (m) => isBirthdayTodayOrMonth(m.birthDate, todayStr).isToday
+    ).length;
+    return expiryAlerts + birthdaysToday + inactiveFiveDaysMembers.length;
+  }, [activeMembers, inactiveFiveDaysMembers, todayStr]);
+
   const totalHistoricalClaims = useMemo(
     () => activeMembers.reduce((acc, m) => acc + m.totalClaims, 0),
     [activeMembers]
@@ -628,6 +654,7 @@ export default function App() {
     name: string;
     birthDate: string;
     phone: string;
+    photoData: string;
   }) => {
     if (!user) return;
 
@@ -638,6 +665,7 @@ export default function App() {
           name: data.name,
           birthDate: data.birthDate,
           phone: data.phone,
+          photoData: data.photoData,
           status: editingMember.status,
           staffEmails: currentBoundedStaffEmails,
           createdByUid: editingMember.createdByUid || user.uid,
@@ -662,6 +690,10 @@ export default function App() {
           totalClaims: 0,
           lastClaimDate: '',
           lastReminderSentDate: '',
+          photoData: data.photoData,
+          membershipExpiryDate: addMonthsToDateString(todayStr, MEMBERSHIP_MONTHS),
+          lastBirthdayMessageDate: '',
+          lastExpiryNoticeDate: '',
           status: 'active',
           staffEmails: currentBoundedStaffEmails,
           createdByUid: user.uid,
@@ -743,6 +775,45 @@ export default function App() {
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, docPath);
     }
+  };
+
+  // Actualiza campos sueltos de un miembro (foto, avisos enviados, renovación).
+  const handleUpdateMemberFields = async (
+    member: MemberRecord,
+    fields: Record<string, string>,
+    notice?: string
+  ) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'members', member.id), {
+        ...fields,
+        staffEmails: currentBoundedStaffEmails,
+        createdByUid: member.createdByUid || user.uid,
+        updatedByUid: user.uid,
+        updatedAt: serverTimestamp(),
+      });
+      if (notice) showNotice(notice);
+    } catch (error) {
+      console.error(`Error actualizando members/${member.id}:`, error);
+      showNotice('No se pudo guardar el cambio. Revisa tu conexión e inténtalo de nuevo.', 'warning');
+    }
+  };
+
+  const handleSaveMemberPhoto = async (member: MemberRecord, photoData: string) => {
+    await handleUpdateMemberFields(
+      member,
+      { photoData },
+      `Foto guardada para ${member.name} (${member.memberCode}).`
+    );
+  };
+
+  const handleRenewMembership = async (member: MemberRecord) => {
+    const newExpiry = getRenewedExpiryDate(member, todayStr);
+    await handleUpdateMemberFields(
+      member,
+      { membershipExpiryDate: newExpiry, lastExpiryNoticeDate: '' },
+      `Membresía de ${member.name} renovada ${MEMBERSHIP_MONTHS} meses, hasta el ${newExpiry}.`
+    );
   };
 
   const handleDeleteMember = async (member: MemberRecord) => {
@@ -1188,6 +1259,17 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveTab('notices')}
+            className={`py-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeTab === 'notices'
+                ? 'text-zinc-900 border-b-2 border-zinc-900 font-semibold'
+                : 'hover:text-zinc-900'
+            }`}
+          >
+            Avisos WhatsApp ({noticesCount})
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveTab('history')}
             className={`py-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               activeTab === 'history'
@@ -1258,6 +1340,17 @@ export default function App() {
           }`}
         >
           Alertas +5d ({inactiveFiveDaysMembers.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('notices')}
+          className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 ${
+            activeTab === 'notices'
+              ? 'bg-zinc-900 text-white'
+              : 'text-zinc-600 hover:bg-zinc-100'
+          }`}
+        >
+          Avisos ({noticesCount})
         </button>
         <button
           type="button"
@@ -1475,6 +1568,24 @@ export default function App() {
             </div>
           </div>
         </section>
+
+        {expiredMembersCount > 0 && activeTab !== 'notices' && (
+          <button
+            type="button"
+            onClick={() => setActiveTab('notices')}
+            className="w-full mb-6 flex items-center justify-between gap-3 text-left px-4 py-3 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 text-red-800 text-xs font-medium transition-colors cursor-pointer"
+          >
+            <span className="inline-flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 shrink-0" />
+              <span>
+                {expiredMembersCount}{' '}
+                {expiredMembersCount === 1 ? 'membresía vencida' : 'membresías vencidas'}: avisa a
+                esas personas por WhatsApp.
+              </span>
+            </span>
+            <span className="underline shrink-0">Ver lista</span>
+          </button>
+        )}
 
         {activeTab === 'staff' && (
           <StaffManagerPanel
@@ -2126,6 +2237,17 @@ export default function App() {
           </section>
         )}
 
+        {activeTab === 'notices' && (
+          <NoticesPanel
+            members={activeMembers}
+            todayStr={todayStr}
+            isAdmin={isAdmin}
+            onUpdateMember={handleUpdateMemberFields}
+            onRenew={handleRenewMembership}
+            onOpenCard={(m) => setCardModalMember(m)}
+          />
+        )}
+
         {activeTab === 'history' && (
           <section className="bg-white border border-zinc-200 rounded-xl overflow-hidden">
             <div className="p-6 border-b border-zinc-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -2219,11 +2341,17 @@ export default function App() {
       />
 
       <MemberCardModal
-        member={cardModalMember}
+        member={
+          cardModalMember
+            ? members.find((m) => m.id === cardModalMember.id) ?? cardModalMember
+            : null
+        }
         todayStr={todayStr}
         onClose={() => setCardModalMember(null)}
         onClaimToday={handleClaimDailyCoffee}
         onOpenReminder={(m) => setReminderModalMember(m)}
+        onSavePhoto={handleSaveMemberPhoto}
+        onRenew={handleRenewMembership}
       />
 
       <ReminderModal
